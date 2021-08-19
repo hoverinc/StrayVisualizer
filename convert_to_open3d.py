@@ -48,7 +48,21 @@ def write_params(flags):
                                                           cy=intrinsics_scaled[1,2],
                                                          )
         params.intrinsic = intrinsic
-        o3d.io.write_pinhole_camera_parameters(os.path.join(flags.out, f"{i:06}.jpg.json"), params)
+
+        o3d.io.write_pinhole_camera_parameters(os.path.join(flags.out, f"{i:06}.o3d.json"), params)
+        write_frame_json(os.path.join(flags.out, f"Frame.{i:04}.jpg.json"), params, i)
+
+def write_frame_json(path, params, frame_number):
+    with open(path, 'w') as f:
+        json.dump({
+            'frameNum': frame_number,
+            'cameraPosition': dict(zip('xyz', params.extrinsic[:3, 3])),
+            'focalLength': dict(zip('xy', params.intrinsic.get_focal_length())),
+            'principalPoint': dict(zip('xy', params.intrinsic.get_principal_point())),
+            'resolution': dict(zip('xy', (params.intrinsic.width, params.intrinsic.height))),
+            'transform': params.extrinsic.tolist()
+            }, 
+        f, indent=2)
 
 def read_args():
     parser = argparse.ArgumentParser()
