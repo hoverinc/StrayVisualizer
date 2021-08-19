@@ -6,6 +6,8 @@ from argparse import ArgumentParser
 from PIL import Image
 import skvideo.io
 
+from multiprocessing.pool import ThreadPool
+
 description = """
 This script visualizes datasets collected using the Stray Scanner app.
 """
@@ -23,12 +25,16 @@ def read_args():
     parser.add_argument('--trajectory', '-t', action='store_true', help="Visualize the trajectory of the camera as a line.")
     parser.add_argument('--frames', '-f', action='store_true', help="Visualize camera coordinate frames from the odometry file.")
     parser.add_argument('--point-clouds', '-p', action='store_true', help="Show concatenated point clouds.")
+    parser.add_argument('--color-point-clouds', action='store_true', help="Show concatenated color point clouds.")
     parser.add_argument('--integrate', '-i', action='store_true', help="Integrate point clouds using the Open3D RGB-D integration pipeline, and visualize it.")
     parser.add_argument('--mesh-filename', type=str, help='Mesh generated from point cloud integration will be stored in this file. open3d.io.write_triangle_mesh will be used.', default=None)
     parser.add_argument('--every', type=int, default=60, help="Show only every nth point cloud and coordinate frames. Only used for point cloud and odometry visualization.")
     parser.add_argument('--voxel-size', type=float, default=0.015, help="Voxel size in meters to use in RGB-D integration.")
+    # parser.add_argument('--depth-width', type=int, default=256, help="Width RGB-D Images are scaled to")
+    # parser.add_argument('--depth-height', type=int, default=192, help="height RGB-D Images are scaled to")
     parser.add_argument('--confidence', '-c', type=int, default=1,
             help="Keep only depth estimates with confidence equal or higher to the given value. There are three different levels: 0, 1 and 2. Higher is more confident.")
+    parser.add_argument('--integrate-every', type=int, default=1, help="Only integrate every nth frame.")
     return parser.parse_args()
 
 def _resize_camera_matrix(camera_matrix, scale_x, scale_y):
@@ -125,10 +131,75 @@ def point_clouds(flags, data):
         T_CW = np.linalg.inv(T_WC)
         confidence = load_confidence(os.path.join(flags.path, 'confidence', f'{i:06}.png'))
         depth = load_depth(os.path.join(flags.path, 'depth', f'{i:06}.npy'), confidence, filter_level=flags.confidence)
+        
         pc += o3d.geometry.PointCloud.create_from_depth_image(depth, intrinsics, extrinsic=T_CW, depth_scale=1.0)
     return [pc]
 
-def integrate(flags, data):
+# def color_point_clouds(flags, data):
+#     intrinsics = get_intrinsics(data['intrinsics'])
+#     pc = o3d.geometry.PointCloud()
+
+#     rgb_path = os.path.join(flags.path, 'rgb.mp4')
+#     video = skvideo.io.vreader(rgb_path)
+#     for i, (T_WC, rgb) in enumerate(zip(data['poses'], video)):
+#         depth_path = os.path.join(flags.path, 'depth', f'{i:06}.npy')
+#         try:
+#             depth = load_depth(depth_path)
+#         except FileNotFoundError:
+#             print(f"Missing/Skipping frame {i:06}", end='\r')
+#             continue
+#         rgb = Image.fromarray(rgb)
+#         rgb = rgb.resize((DEPTH_WIDTH, DEPTH_HEIGHT))
+#         rgb = np.array(rgb)
+#         rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
+#             o3d.geometry.Image(rgb), depth,
+#             depth_scale=1.0, depth_trunc=4.0, convert_rgb_to_intensity=False)
+
+#         print(f"Point cloud {i}", end="\r")
+#         T_CW = np.linalg.inv(T_WC)
+#         # pc += o3d.geometry.PointCloud.create_from_depth_image(depth, intrinsics, extrinsic=T_CW, depth_scale=1.0)
+#         pc += o3d.geometry.PointCloud.create_from_rgbd_image(
+#             image=rgbd, intrinsic=intrinsics, extrinsic=T_CW)
+
+#     return [pc]
+
+def color_point_clouds(flags, data):
+    def preload(inputs):
+        i, (T_WC, rgb) = inputs
+        depth_path = os.path.join(flags.path, 'depth', f'{i:06}.npy')
+        try:
+            depth = load_depth(depth_path)
+        except FileNotFoundError:
+            print(f"Missing/Skipping frame {i:06}", end='\r')
+            return i, (T_WC, None, None)
+        rgb = Image.fromarray(rgb)
+        rgb = rgb.resize((DEPTH_WIDTH, DEPTH_HEIGHT))
+        rgb = np.array(rgb)
+        rgb = o3d.geometry.Image(rgb)
+
+        return i, (T_WC, rgb, depth)
+
+    intrinsics = get_intrinsics(data['intrinsics'])
+    pc = o3d.geometry.PointCloud()
+
+    rgb_path = os.path.join(flags.path, 'rgb.mp4')
+    video = skvideo.io.vreader(rgb_path)
+    with ThreadPool() as pool:
+        for i, (T_WC, rgb, depth) in pool.imap_unordered(preload, enumerate(zip(data['poses'], video))): 
+            if depth is None: continue         
+            rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
+                rgb, depth,
+                depth_scale=1.0, depth_trunc=4.0, convert_rgb_to_intensity=False)
+
+            print(f"Point cloud {i}", end="\r")
+            T_CW = np.linalg.inv(T_WC)
+            # pc += o3d.geometry.PointCloud.create_from_depth_image(depth, intrinsics, extrinsic=T_CW, depth_scale=1.0)
+            pc += o3d.geometry.PointCloud.create_from_rgbd_image(
+                image=rgbd, intrinsic=intrinsics, extrinsic=T_CW)
+
+    return [pc]
+
+def integrate(flags, data, integrate_every=1):
     """
     Integrates collected RGB-D maps using the Open3D integration pipeline.
 
@@ -146,9 +217,14 @@ def integrate(flags, data):
     rgb_path = os.path.join(flags.path, 'rgb.mp4')
     video = skvideo.io.vreader(rgb_path)
     for i, (T_WC, rgb) in enumerate(zip(data['poses'], video)):
-        print(f"Integrating frame {i:06}", end='\r')
+        if i % integrate_every != 0: continue
+        print(f"Integrating frame {i:06}     ", end='\r')
         depth_path = os.path.join(flags.path, 'depth', f'{i:06}.npy')
-        depth = load_depth(depth_path)
+        try:
+            depth = load_depth(depth_path)
+        except FileNotFoundError:
+            print(f"Missing/Skipping frame {i:06}", end='\r')
+            continue
         rgb = Image.fromarray(rgb)
         rgb = rgb.resize((DEPTH_WIDTH, DEPTH_HEIGHT))
         rgb = np.array(rgb)
@@ -175,7 +251,7 @@ def main():
     if not validate(flags):
         return
 
-    if not flags.frames and not flags.point_clouds and not flags.integrate:
+    if not flags.frames and not flags.point_clouds and not flags.integrate and not flags.color_point_clouds:
         flags.frames = True
         flags.point_clouds = True
         flags.trajectory = True
@@ -188,8 +264,11 @@ def main():
         geometries += show_frames(flags, data)
     if flags.point_clouds:
         geometries += point_clouds(flags, data)
+    if flags.color_point_clouds:
+        geometries += color_point_clouds(flags, data)
     if flags.integrate:
-        mesh = integrate(flags, data)
+        print(flags)
+        mesh = integrate(flags, data, flags.integrate_every)
         if flags.mesh_filename is not None:
             o3d.io.write_triangle_mesh(flags.mesh_filename, mesh)
         geometries += [mesh]

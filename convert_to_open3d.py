@@ -11,6 +11,45 @@ FRAME_HEIGHT = 1440
 OUT_WIDTH = 640
 OUT_HEIGHT = 480
 
+from scipy.spatial.transform import Rotation
+import itertools
+import open3d as o3d
+
+def read_data(path, keyframes=None):
+    intrinsics = np.loadtxt(os.path.join(path, 'camera_matrix.csv'), delimiter=',')
+    odometry = np.loadtxt(os.path.join(path, 'odometry.csv'), delimiter=',', skiprows=1)
+    poses = []
+
+    for i, line in enumerate(odometry):
+        if keyframes is None or i in keyframes:
+            # x, y, z, qx, qy, qz, qw
+            position = line[:3]
+            quaternion = line[3:]
+            T_WC = np.eye(4)
+            T_WC[:3, :3] = Rotation.from_quat(quaternion).as_matrix()
+            T_WC[:3, 3] = position
+            poses.append(T_WC)
+    return { 'poses': poses, 'intrinsics': intrinsics }
+
+def write_params(flags):
+# def stray_to_o3d(path, poses, intrinsic_matrix, width, height, indexes=itertools.count()):
+    indexes=itertools.count()
+
+    poses, intrinsics = read_data(flags.dataset).values()
+    intrinsics_scaled = _resize_camera_matrix(intrinsics, OUT_WIDTH / FRAME_WIDTH, OUT_HEIGHT / FRAME_HEIGHT)
+
+    for i, pose in zip(indexes, poses):
+        params = o3d.camera.PinholeCameraParameters()
+        params.extrinsic = np.linalg.inv(pose)
+        intrinsic = o3d.camera.PinholeCameraIntrinsic(width=OUT_WIDTH, height=OUT_HEIGHT, 
+                                                          fx=intrinsics_scaled[0,0], 
+                                                          fy=intrinsics_scaled[1,1],
+                                                          cx=intrinsics_scaled[0,2],
+                                                          cy=intrinsics_scaled[1,2],
+                                                         )
+        params.intrinsic = intrinsic
+        o3d.io.write_pinhole_camera_parameters(os.path.join(flags.out, f"{i:06}.jpg.json"), params)
+
 def read_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str)
@@ -86,6 +125,7 @@ def main():
     os.makedirs(rgb_out, exist_ok=True)
     os.makedirs(depth_out, exist_ok=True)
 
+    write_params(flags)
     write_config(flags)
     write_intrinsics(flags)
     write_depth(flags, depth_out)
