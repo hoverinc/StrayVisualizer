@@ -14,6 +14,7 @@ OUT_HEIGHT = 480
 from scipy.spatial.transform import Rotation
 import itertools
 import open3d as o3d
+from pathlib import Path
 
 def read_data(path, keyframes=None):
     intrinsics = np.loadtxt(os.path.join(path, 'camera_matrix.csv'), delimiter=',')
@@ -49,11 +50,15 @@ def write_params(flags):
                                                          )
         params.intrinsic = intrinsic
 
-        o3d.io.write_pinhole_camera_parameters(os.path.join(flags.out, f"{i:06}.o3d.json"), params)
-        write_frame_json(os.path.join(flags.out, f"Frame.{i:04}.jpg.json"), params, i)
+        o3d_path, poses_path = Path(flags.out) / 'poses_o3d', Path(flags.out) / 'poses'
+        o3d_path.mkdir(exist_ok=True, parents=True)
+        poses_path.mkdir(exist_ok=True, parents=True)
+        o3d.io.write_pinhole_camera_parameters(str(o3d_path /  f"Frame.{i:04}.o3d.json"), params)
+        write_frame_json(poses_path /  f"Frame.{i:04}.jpg.json", params, i)
 
 def write_frame_json(path, params, frame_number):
-    with open(path, 'w') as f:
+    path = Path(path)
+    with path.open('w') as f:
         json.dump({
             'frameNum': frame_number,
             'cameraPosition': dict(zip('xyz', params.extrinsic[:3, 3])),
@@ -78,7 +83,7 @@ def write_frames(flags, rgb_out_dir):
         print(f"Writing rgb frame {i:06}" + " " * 10, end='\r')
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         frame = cv2.resize(frame, (OUT_WIDTH, OUT_HEIGHT))
-        frame_path = os.path.join(rgb_out_dir, f"{i:06}.jpg")
+        frame_path = os.path.join(rgb_out_dir, f"Frame.{i:04}.jpg")
         params = [int(cv2.IMWRITE_JPEG_QUALITY), 90]
         cv2.imwrite(frame_path, frame, params)
 
