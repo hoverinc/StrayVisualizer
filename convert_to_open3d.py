@@ -16,6 +16,12 @@ import itertools
 import open3d as o3d
 from pathlib import Path
 
+from multiprocessing import cpu_count
+from multiprocessing.pool import ThreadPool
+from multiprocessing import Pool as ProcessPool
+from functools import partial
+from tqdm import tqdm
+
 def read_data(path, keyframes=None):
     intrinsics = np.loadtxt(os.path.join(path, 'camera_matrix.csv'), delimiter=',')
     odometry = np.loadtxt(os.path.join(path, 'odometry.csv'), delimiter=',', skiprows=1)
@@ -76,36 +82,51 @@ def read_args():
     parser.add_argument('--confidence', type=int, default=2)
     return parser.parse_args()
 
+
+def write_one_frame(args, flags, rgb_out_dir):
+    i, frame = args
+    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+    frame = cv2.resize(frame, (OUT_WIDTH, OUT_HEIGHT))
+    frame_path = os.path.join(rgb_out_dir, f"Frame.{i:04}.jpg")
+    params = [int(cv2.IMWRITE_JPEG_QUALITY), 90]
+    cv2.imwrite(frame_path, frame, params)
+
+
 def write_frames(flags, rgb_out_dir):
     rgb_video = os.path.join(flags.dataset, 'rgb.mp4')
     video = io.vreader(rgb_video)
-    for i, frame in enumerate(video):
-        print(f"Writing rgb frame {i:06}" + " " * 10, end='\r')
-        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        frame = cv2.resize(frame, (OUT_WIDTH, OUT_HEIGHT))
-        frame_path = os.path.join(rgb_out_dir, f"Frame.{i:04}.jpg")
-        params = [int(cv2.IMWRITE_JPEG_QUALITY), 90]
-        cv2.imwrite(frame_path, frame, params)
+    num_frames = int(float(io.ffprobe(rgb_video)['video']['@duration'])*60)
+    f = partial(write_one_frame, flags=flags, rgb_out_dir=rgb_out_dir)
+    with ThreadPool( cpu_count() ) as pool:
+        for _ in tqdm(pool.imap_unordered(f, enumerate(video)), total=num_frames, position=0, unit_scale=True):
+            pass
 
 def resize_depth(depth):
     out = cv2.resize(depth, (OUT_WIDTH, OUT_HEIGHT), interpolation=cv2.INTER_NEAREST_EXACT)
     out[out < 10] = 0
     return out
 
-def write_depth(flags, depth_out_dir):
-    depth_dir_in = os.path.join(flags.dataset, 'depth')
-    confidence_dir = os.path.join(flags.dataset, 'confidence')
-    files = sorted(os.listdir(depth_dir_in))
-    for filename in files:
-        if '.npy' not in filename:
-            continue
-        print(f"Writing depth frame {filename}", end='\r')
+def write_one_depth(filename, flags, depth_dir_in, depth_out_dir, confidence_dir):
+    if '.npy' in filename:
         number, _ = filename.split('.')
         depth = np.load(os.path.join(depth_dir_in, filename))
         confidence = cv2.imread(os.path.join(confidence_dir, number + '.png'))[:, :, 0]
         depth[confidence < flags.confidence] = 0
         depth = resize_depth(depth)
         cv2.imwrite(os.path.join(depth_out_dir, number + '.png'), depth)
+
+def write_depth(flags, depth_out_dir):
+    depth_dir_in = os.path.join(flags.dataset, 'depth')
+    confidence_dir = os.path.join(flags.dataset, 'confidence')
+    files = os.listdir(depth_dir_in)
+    f = partial(write_one_depth, flags=flags, 
+                                 depth_dir_in=depth_dir_in, 
+                                 depth_out_dir=depth_out_dir,
+                                 confidence_dir=confidence_dir)
+    # with ProcessPool() as pool:
+    with ThreadPool() as pool:
+        for _ in tqdm(pool.imap_unordered(f, files), total=len(files), position=1, unit_scale=True):
+            pass
 
 def write_intrinsics(flags):
     intrinsics = np.loadtxt(os.path.join(flags.dataset, 'camera_matrix.csv'), delimiter=',')
@@ -137,6 +158,9 @@ def write_config(flags):
     with open(os.path.join(dataset_path, 'config.json'), 'w') as f:
         f.write(json.dumps(config, indent=4, sort_keys=True))
 
+def call(f, data):
+    return f(data)
+
 def main():
     flags = read_args()
     rgb_out = os.path.join(flags.out, 'color/')
@@ -144,11 +168,24 @@ def main():
     os.makedirs(rgb_out, exist_ok=True)
     os.makedirs(depth_out, exist_ok=True)
 
-    write_params(flags)
-    write_config(flags)
-    write_intrinsics(flags)
-    write_depth(flags, depth_out)
-    write_frames(flags, rgb_out)
+    wd = partial(write_depth, depth_out_dir=depth_out)
+    wf = partial(write_frames, rgb_out_dir=rgb_out)
+    f = partial(call, data=flags)
+    steps = (   wf, 
+                wd, 
+                write_params, 
+                write_intrinsics, 
+                write_config )
+
+    with ProcessPool(len(steps)) as pool:
+        for _ in pool.imap_unordered(f, steps):
+            pass
+
+    # write_params(flags)
+    # write_config(flags)
+    # write_intrinsics(flags)
+    # write_depth(flags, depth_out)
+    # write_frames(flags, rgb_out)
     print("\nDone.")
 
 
