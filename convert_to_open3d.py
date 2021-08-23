@@ -8,8 +8,8 @@ from stray_visualize import DEPTH_WIDTH, DEPTH_HEIGHT, _resize_camera_matrix
 
 FRAME_WIDTH = 1920
 FRAME_HEIGHT = 1440
-OUT_WIDTH = 640
-OUT_HEIGHT = 480
+OUT_WIDTH = 1920
+OUT_HEIGHT = 1440
 
 from scipy.spatial.transform import Rotation
 import itertools
@@ -80,11 +80,13 @@ def read_args():
     parser.add_argument('--dataset', type=str)
     parser.add_argument('--out', type=str)
     parser.add_argument('--confidence', type=int, default=2)
+    parser.add_argument('--subsample', type=int, default=1)
     return parser.parse_args()
 
 
 def write_one_frame(args, flags, rgb_out_dir):
     i, frame = args
+    if (i % flags.subsample) != 0: return None
     frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
     frame = cv2.resize(frame, (OUT_WIDTH, OUT_HEIGHT))
     frame_path = os.path.join(rgb_out_dir, f"Frame.{i:04}.jpg")
@@ -109,6 +111,9 @@ def resize_depth(depth):
 def write_one_depth(filename, flags, depth_dir_in, depth_out_dir, confidence_dir):
     if '.npy' in filename:
         number, _ = filename.split('.')
+
+        if (int(number) % flags.subsample) != 0: return None
+        
         depth = np.load(os.path.join(depth_dir_in, filename))
         confidence = cv2.imread(os.path.join(confidence_dir, number + '.png'))[:, :, 0]
         depth[confidence < flags.confidence] = 0
@@ -153,7 +158,8 @@ def write_config(flags):
         "depth_scale": 1000.0,
         "max_depth": 10.0,
         "min_depth": 0.05,
-        "python_multi_threading": False
+        "python_multi_threading": False,
+        "subsample": flags.subsample
     }
     with open(os.path.join(dataset_path, 'config.json'), 'w') as f:
         f.write(json.dumps(config, indent=4, sort_keys=True))
