@@ -59,7 +59,7 @@ def write_params(flags):
         o3d_path, poses_path = Path(flags.out) / 'poses_o3d', Path(flags.out) / 'poses'
         o3d_path.mkdir(exist_ok=True, parents=True)
         poses_path.mkdir(exist_ok=True, parents=True)
-        o3d.io.write_pinhole_camera_parameters(str(o3d_path /  f"Frame.{i:04}.o3d.json"), params)
+        o3d.io.write_pinhole_camera_parameters(str(o3d_path /  f"Frame.{i:06}.o3d.json"), params)
         write_frame_json(poses_path /  f"Frame.{i:04}.jpg.json", params, i)
 
 def write_frame_json(path, params, frame_number):
@@ -89,7 +89,7 @@ def write_one_frame(args, flags, rgb_out_dir):
     if (i % flags.subsample) != 0: return None
     frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
     frame = cv2.resize(frame, (OUT_WIDTH, OUT_HEIGHT))
-    frame_path = os.path.join(rgb_out_dir, f"Frame.{i:04}.jpg")
+    frame_path = os.path.join(rgb_out_dir, f"Frame.{i:06}.jpg")
     params = [int(cv2.IMWRITE_JPEG_QUALITY), 90]
     cv2.imwrite(frame_path, frame, params)
 
