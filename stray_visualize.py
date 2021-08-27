@@ -10,7 +10,6 @@ import multiprocessing
 from multiprocessing.pool import ThreadPool
 from functools import partial
 
-
 description = """
 This script visualizes datasets collected using the Stray Scanner app.
 """
@@ -224,7 +223,7 @@ def integrate_frame_wrapper(args, volume, integrate_every=1):
     if i % integrate_every != 0: 
         return integrate_frame(T_WC, rgb, volume)
 
-def integrate(flags, data, integrate_every=1, threads_per_core=8):
+def integrate(flags, data, integrate_every=1, num_threads=128):
     """
     Integrates collected RGB-D maps using the Open3D integration pipeline.
 
@@ -242,7 +241,7 @@ def integrate(flags, data, integrate_every=1, threads_per_core=8):
     rgb_path = os.path.join(flags.path, 'rgb.mp4')
     video = skvideo.io.vreader(rgb_path)
     f = partial(integrate_frame_wrapper, volume=volume, integrate_every=integrate_every)
-    with ThreadPool(multiprocessing.cpu_count()*threads_per_core) as pool:
+    with ThreadPool(num_threads) as pool:
         for _ in pool.imap_unordered(f, enumerate(zip(data['poses'], video))):
             pass
     mesh = volume.extract_triangle_mesh()
