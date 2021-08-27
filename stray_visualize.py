@@ -6,7 +6,10 @@ from argparse import ArgumentParser
 from PIL import Image
 import skvideo.io
 
+import multiprocessing
 from multiprocessing.pool import ThreadPool
+from functools import partial
+
 
 description = """
 This script visualizes datasets collected using the Stray Scanner app.
@@ -199,7 +202,54 @@ def color_point_clouds(flags, data):
 
     return [pc]
 
-def integrate(flags, data, integrate_every=1):
+def integrate_frame(T_WC, rgb, volume):
+    print(f"Integrating frame {i:06}     ", end='\r')
+    depth_path = os.path.join(flags.path, 'depth', f'{i:06}.npy')
+    try:
+        depth = load_depth(depth_path)
+    except FileNotFoundError:
+        print(f"Missing/Skipping frame {i:06}", end='\r')
+        return
+    rgb = Image.fromarray(rgb)
+    rgb = rgb.resize((DEPTH_WIDTH, DEPTH_HEIGHT))
+    rgb = np.array(rgb)
+    rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
+        o3d.geometry.Image(rgb), depth,
+        depth_scale=1.0, depth_trunc=4.0, convert_rgb_to_intensity=False)
+
+    volume.integrate(rgbd, intrinsics, np.linalg.inv(T_WC))
+
+def integrate_frame_wrapper(args, volume, integrate_every=1):
+    i, (T_WC, rgb) = args
+    if i % integrate_every != 0: 
+        return integrate_frame(T_WC, rgb, volume)
+
+def integrate(flags, data, integrate_every=1, threads_per_core=8):
+    """
+    Integrates collected RGB-D maps using the Open3D integration pipeline.
+
+    flags: command line arguments
+    data: dict with keys ['intrinsics', 'poses']
+    Returns: open3d.geometry.TriangleMesh
+    """
+    volume = o3d.pipelines.integration.ScalableTSDFVolume(
+            voxel_length=flags.voxel_size,
+            sdf_trunc=0.05,
+            color_type=o3d.pipelines.integration.TSDFVolumeColorType.RGB8)
+
+    intrinsics = get_intrinsics(data['intrinsics'])
+
+    rgb_path = os.path.join(flags.path, 'rgb.mp4')
+    video = skvideo.io.vreader(rgb_path)
+    f = partial(integrate_frame_wrapper, volume=volume, integrate_every=integrate_every)
+    with ThreadPool(multiprocessing.cpu_count()*threads_per_core) as pool:
+        for _ in pool.imap_unordered(f, enumerate(zip(data['poses'], video))):
+            pass
+    mesh = volume.extract_triangle_mesh()
+    mesh.compute_vertex_normals()
+    return mesh
+
+def integrate_old(flags, data, integrate_every=1):
     """
     Integrates collected RGB-D maps using the Open3D integration pipeline.
 
@@ -272,7 +322,7 @@ def main():
         if flags.mesh_filename is not None:
             o3d.io.write_triangle_mesh(flags.mesh_filename, mesh)
         geometries += [mesh]
-    o3d.visualization.draw_geometries(geometries)
+    # o3d.visualization.draw_geometries(geometries)
 
 if __name__ == "__main__":
     main()
